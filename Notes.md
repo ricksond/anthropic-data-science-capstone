@@ -68,4 +68,102 @@ CC-BY**. The code associated with this project is the MIT License and hence this
 
 The raw data in this project were obtained directly from Anthropic's official Economic Index repository on Hugging face rather than from a mirror or another student's copy. This project uses the most recent available release at the time of data acquisation, `release_2026_06_26`
 
-The raw CSV files are stored locally in the project's `data/` directory and are excluded from git tracking. The repository will contain scripts used to inspect and process the data rather than the raw dataset itself.
+The raw CSV files are stored locally in the project's `data/` directory and are excluded from git tracking. The repository will contain scripts used to inspect and process the data rather than the raw dataset.
+
+
+## Step 3: Dataset Documentation and Paper Summary
+
+### Primary Documentation
+
+The Primary documentation for this project is the June 26, 2026 Antrhopic Economic Index report, "Cadences", and the release-specific data documentation for `release_2026_06_26`.
+
+Report:
+
+https://www.anthropic.com/research/economic-index-june-2026-report
+
+Release Documentation:
+https://huggingface.co/datasets/Anthropic/EconomicIndex/blob/main/release_2026_06_26/data_documentation.md
+
+The previously releases 2025 Economic Index paper was laso reviewed as methodological background. It documents the development of the O*NET task mapping and the five collaboration-pattern classifications. However, the 2026 report and release documentation are treated as the authoritative sources for the data analyzed in this project.
+
+### How the Data were collected
+
+Anthropic uses privacy-preserving classifiers to analyze sampled Claude usage. The June 26,2026 report describes chages to the Economic Index pipeline, including higher frequency sampling, a new classfier for conversation outputs, and more granular reporting of claude conversations and first party API usage.
+
+The release data used in this project are aggregated at hte calendar-month level and cover months April and May 2026.
+
+The release contains two source files:
+
+1. `aei_claude_ai_2026-06-26.csv`
+   - Claude chat and Coworks and Free, Pro, and Max accounts
+   - Includes Claude.ai and the Claude desktop application
+   - Global, country, and subregion breakdowns
+
+2. `aei_1p_api_2026-06-26.csv`
+   - Anthropic first-party API traffic
+   - Excludes Claude Code
+   - Global-level data only
+
+### Unit of Observation
+
+A roaw doesn't represent an individual user, business , conversation or task.
+
+According to the release documentation, each row represents one published metric value for a specific geography and category combination.
+
+Important dimensions are as follows:
+
+- `date_start`
+- `date_end`
+- `geo_id`
+- `geo_level`
+- `category_name`
+- `hierarchy_level`
+- `metric_id`
+- `value`
+- `node_name`
+- `node_external_id`
+
+### Task and occupation classifications
+
+The release provided several analysis categories. the `onet` category represents work activities from the U.S Department of Labor O*NET database:
+
+- Level 0: Task
+- Level 1: Detailed Work Activity
+- Level 2: Intermediate Work Activity
+- Level 3: Generalized Work Activity
+
+The `soc_occupation` category represents occupations from the U.S Bureau of Labor Statistics Standaed Occupational Classification:
+
+- Level 0: Detailed Occupation
+- Level 1: Major Group
+
+### Collaboration labels
+
+The methodologu identifies 5 collaboration patterns:
+
+-Directive
+-Feedback Loop
+-Task Iteration
+-Learning
+-Validation
+
+The 2025 Methodology paper reported 90.7% optimal agreement in Human validation of 150 conversations. This is methodological background, not a verification target for the 2026 CSVs.
+
+### Verification Targets for Step 4
+
+The Inventory scripts will verify:
+1. Data covers April and May 2026.
+2. the release contains:
+    `aei_claude_ai_2026-06-26.csv`
+    `aei_1p_api_2026-06-26.csv`
+3. Published file sizes are approximately 219MD and 77.3MB
+
+4. Claude.ai includes global, country and subregion data; 1P API is global only.
+
+5. Both Sources contain OO*NET, request, and SOC classifications globally.
+
+### Relevance to Research Question Q3
+
+This project compares Claude.ai as a consumer-facing souces with 1P API as a business/developer-oriented source. This is a proxy, not a complete measure of all consumers or businesses.
+
+Because the data are observational and aggregated, differences may reflect task,occupation,user population,product or geographic composition. The analysis will therefore compare overall differences and differences within comparable tasks and occupations.
