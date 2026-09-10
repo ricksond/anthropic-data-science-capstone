@@ -121,6 +121,35 @@ def verify_targets(dataframes):
             f"{name} missing values:",
             "PASS" if not has_missing else "FAIL"
         )
+def inspect_examples(dataframes):
+    print("\n" + "=" * 80)
+    print("RAW EXAMPLES")
+    print("=" * 80)
+
+    for name, df in dataframes.items():
+        print(f"\n--- {name} ---")
+
+        # Select 5 examples spread across the dataset
+        examples = df.iloc[
+            [0, len(df) // 4, len(df) // 2, (3 * len(df)) // 4, len(df) - 1]
+        ]
+
+        print(
+            examples[
+                [
+                    "date_start",
+                    "date_end",
+                    "geo_id",
+                    "geo_level",
+                    "category_name",
+                    "hierarchy_level",
+                    "metric_id",
+                    "value",
+                    "node_name",
+                    "node_external_id",
+                ]
+            ].to_string(index=False)
+        )
 
 def main():
     print("Anthropic Economic Index — Dataset Inventory")
@@ -137,6 +166,7 @@ def main():
 
     if len(dataframes) == 2:
         verify_targets(dataframes)
+        inspect_examples(dataframes)
 
     print("\n" + "=" * 80)
     print("Inventory complete.")

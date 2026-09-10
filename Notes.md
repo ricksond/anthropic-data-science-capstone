@@ -173,8 +173,7 @@ Because the data are observational and aggregated, differences may reflect task,
 The inventory script src/inventory.py was used to inspect both release csv files and verify the targets documented in Step 3
 
 
-                                    Claimed vs. Actual
-| :--------------------------------------------------------------------------------------------------: |
+                                             Claimed vs. Actual
 |       Target	           |           Claimed	          |      Actual	                |  Result      |
 | :--------------------:   | :-------------------------:  |  :----------------------:   | :----------: |
 |  Release period	       | April–May 2026	              |  April–May 2026	            |    PASS      |
@@ -193,5 +192,30 @@ The inventory script src/inventory.py was used to inspect both release csv files
 - Both files contain the documented fields: date_start, date_end, geo_id, geo_level, category_name, hierarchy_level, metric_id,       value, node_name, and node_external_id.
 - All columns have a 0.00% missing-value rate in both files. 
 - The inventory script confirmed all Step 3 verification targets with no failures.
+
+## Step 5: Raw Example Inspection
+
+The inventory Script selected five examples from each CSV to inspect the data structure and meaning of individual observations.
+
+|Source	    |   Date	  |        Geography	            |   Category	    |  Metric	                             |    Value	|
+|:--------: | :--------:  | :-----------------------------: | :---------------: | :------------------------------------: | :------: |
+|Claude.ai	| May 2026	  |  Western Cape, South Africa	    |  O*NET	        |  pct	                                 |    0.25	|
+|Claude.ai	| May 2026	  |  Cameroon	                    |  Request	        |  pct	                                 |    0.89	|
+|Claude.ai	| April 2026  |  Philippines	                |  O*NET	        |  pct	                                 |    0.09	|
+|Claude.ai	| May 2026	  | Argentina (Buenos Aires)        |  SOC occupation   |  pct	                                 |    0.83	|
+|Claude.ai	| May 2026	  | Global	                        |  SOC occupation	|  use_case_work_pct	                 |    42.60 |
+|1P API	    | May 2026	  | Global	                        |  O*NET	        |  use_case_personal_pct	             |    2.67  |
+|1P API	    | May 2026	  | Global	                        |  O*NET	        |  artifact_translation_pct	             |    0.19  |
+|1P API	    | May 2026	  | Global	                        |  O*NET	        |  artifact_advice_or_recommendation_pct |	  0.00	|
+|1P API	    | May 2026	  | Global	                        |  SOC occupation	|  human_only_ability_pct	             |	  95.20 |
+|1P API	    | April 2026  |   Global	                    |  Request	        |  pct	                                 |     0.75 |
+
+### Observations
+
+The examples show that each row represents an aggregated metric for a specific time period,
+geography,category, and task or occupation. The metric_id determines what the reported value measures, while 
+node_name and node_external_id identify the associated task, request or occupation.
+
+The examples also show that Claude.ai contains geographic variation, while the 1P API examples are global. Values cannot be interpreted without considering the metric being reported; for example, 0.25 for pct and 42.60 for use_case_work_pct represent different measures.
 
 
