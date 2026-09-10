@@ -160,10 +160,36 @@ The Inventory scripts will verify:
 
 4. Claude.ai includes global, country and subregion data; 1P API is global only.
 
-5. Both Sources contain OO*NET, request, and SOC classifications globally.
+5. Both Sources contain O*NET, request, and SOC classifications globally.
 
 ### Relevance to Research Question Q3
 
 This project compares Claude.ai as a consumer-facing souces with 1P API as a business/developer-oriented source. This is a proxy, not a complete measure of all consumers or businesses.
 
 Because the data are observational and aggregated, differences may reflect task,occupation,user population,product or geographic composition. The analysis will therefore compare overall differences and differences within comparable tasks and occupations.
+
+## Step 4: Dataset Inventory and Verification
+
+The inventory script src/inventory.py was used to inspect both release csv files and verify the targets documented in Step 3
+
+
+Claimed vs. Actual
+Target	Claimed	Actual	Result
+Release period	April–May 2026	April–May 2026	PASS
+Claude geography	Global, country, subregion	Global, country, subregion	PASS
+1P API geography	Global only	Global only	PASS
+Claude categories	Overall, O*NET, request, SOC	All four present	PASS
+1P API categories	Overall, O*NET, request, SOC	All four present	PASS
+Claude missing values	No missing values expected	0% across all columns	PASS
+1P API missing values	No missing values expected	0% across all columns	PASS
+Claude columns	10 documented fields	10	PASS
+1P API columns	10 documented fields	10	PASS
+
+### Dataset Inventory
+- Claude.ai: 1,636,573 rows, 10 columns, 209.02 MB
+- 1P API: 491,705 rows, 10 columns, 73.70 MB
+- Both files contain the documented fields: date_start, date_end, geo_id, geo_level, category_name, hierarchy_level, metric_id,       value, node_name, and node_external_id.
+- All columns have a 0.00% missing-value rate in both files. 
+- The inventory script confirmed all Step 3 verification targets with no failures.
+
+
