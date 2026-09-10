@@ -217,5 +217,5 @@ __marimo__/
 # Streamlit
 .streamlit/secrets.toml
 
-#data directory
-data/*
+#data files directory for csvs
+*.csv
