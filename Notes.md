@@ -173,17 +173,19 @@ Because the data are observational and aggregated, differences may reflect task,
 The inventory script src/inventory.py was used to inspect both release csv files and verify the targets documented in Step 3
 
 
-Claimed vs. Actual
-       Target	       |           Claimed	          |      Actual	                |  Result
-Release period	       | April–May 2026	              |  April–May 2026	            |    PASS
-Claude geography	   | Global, country, subregion	  |  Global, country, subregion |	 PASS
-1P API geography	   | Global only	              |  Global only	            |    PASS
-Claude categories	   | Overall, O*NET, request, SOC |	 All four present	        |    PASS
-1P API categories	   | Overall, O*NET, request, SOC |	 All four present	        |    PASS
-Claude missing values  | No missing values expected	  |  0% across all columns	    |    PASS
-1P API missing values  | No missing values expected	  |  0% across all columns	    |    PASS
-Claude columns	       | 10 documented fields	      |          10                 |    PASS
-1P API columns	       | 10 documented fields		  |          10                 |    PASS
+                                    Claimed vs. Actual
+|:--------------------------------------------------------------------------------------------------:  |
+|       Target	           |           Claimed	          |      Actual	                |  Result      |
+| :--------------------:   | :-------------------------:  |  :----------------------:   | :----------: |
+|  Release period	       | April–May 2026	              |  April–May 2026	            |    PASS      |
+|  Claude geography	       | Global, country, subregion	  |  Global, country, subregion |	 PASS      |
+|  1P API geography	       | Global only	              |  Global only	            |    PASS      |
+|  Claude categories	   | Overall, O*NET, request, SOC |	 All four present	        |    PASS      |
+|  1P API categories	   | Overall, O*NET, request, SOC |	 All four present	        |    PASS      |
+|  Claude missing values   | No missing values expected	  |  0% across all columns	    |    PASS      |
+|  1P API missing values   | No missing values expected	  |  0% across all columns	    |    PASS      |
+|  Claude columns	       | 10 documented fields	      |          10                 |    PASS      |
+|  1P API columns	       | 10 documented fields		  |          10                 |    PASS      |
 
 ### Dataset Inventory
 - Claude.ai: 1,636,573 rows, 10 columns, 209.02 MB
