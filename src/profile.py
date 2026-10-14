@@ -1,7 +1,7 @@
 from pathlib import Path
+import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
-import numpy as np
 
 
 DATA_DIR = Path("data")
@@ -10,7 +10,11 @@ OUTPUT_DIR = DATA_DIR / "profile"
 CLAUDE_FILE = DATA_DIR / "aei_claude_ai_2026-06-26.csv"
 API_FILE = DATA_DIR / "aei_1p_api_2026-06-26.csv"
 
-
+# 2018 SOC major-group codes -> names. node_external_id for soc_occupation
+# rows is a detailed SOC code like "13-1199.06"; the first two digits are
+# the major group. This lets us roll ~800 detailed occupations up into the
+# ~23 broad "occupation categories" Q3 asks about, instead of only being
+# able to compare the handful of exact titles that show up in both top-10s.
 SOC_MAJOR_GROUPS = {
     "11": "Management",
     "13": "Business and Financial Operations",
@@ -41,17 +45,17 @@ COLLAB_METRICS = [
     "collaboration_bucket_automation_pct",
     "collaboration_bucket_augmentation_pct",
 ]
- 
 
 
 def load_data():
     claude = pd.read_csv(CLAUDE_FILE)
     api = pd.read_csv(API_FILE)
- 
+
     claude["source"] = "Claude.ai"
     api["source"] = "1P API"
- 
+
     return pd.concat([claude, api], ignore_index=True)
+
 
 def add_major_group(df):
     """Attach a SOC major-occupation-group label, for soc_occupation rows."""
@@ -71,19 +75,19 @@ def plot_collaboration(df):
         & (df["geo_level"] == "global")
         & (df["metric_id"].isin(COLLAB_METRICS))
     ]
- 
+
     if data.empty:
         print("No collaboration data available.")
         return
- 
+
     pivot = data.pivot_table(
         index="source", columns="metric_id", values="value", aggfunc="mean"
     )
- 
+
     ax = pivot.plot(kind="bar")
     for container in ax.containers:
         ax.bar_label(container, fmt="%.1f")
- 
+
     plt.title("Automation vs. Augmentation (All Traffic, Unadjusted)")
     plt.ylabel("Percentage")
     plt.xlabel("Source")
@@ -91,29 +95,29 @@ def plot_collaboration(df):
     plt.tight_layout()
     plt.savefig(OUTPUT_DIR / "collaboration.png", dpi=300)
     plt.close()
- 
- 
+
+
 def plot_use_case(df):
     metrics = ["use_case_work_pct", "use_case_personal_pct", "use_case_coursework_pct"]
- 
+
     data = df[
         (df["category_name"] == "overall")
         & (df["geo_level"] == "global")
         & (df["metric_id"].isin(metrics))
     ]
- 
+
     if data.empty:
         print("No use-case data available.")
         return
- 
+
     pivot = data.pivot_table(
         index="source", columns="metric_id", values="value", aggfunc="mean"
     )
- 
+
     ax = pivot.plot(kind="bar")
     for container in ax.containers:
         ax.bar_label(container, fmt="%.1f")
- 
+
     plt.title("AI Use by Use Case")
     plt.ylabel("Percentage")
     plt.xlabel("Source")
@@ -121,6 +125,7 @@ def plot_use_case(df):
     plt.tight_layout()
     plt.savefig(OUTPUT_DIR / "use_case.png", dpi=300)
     plt.close()
+
 
 def plot_occupation(df):
     """Top-10 occupation usage share per source (unchanged from before —
@@ -130,11 +135,11 @@ def plot_occupation(df):
         & (df["geo_level"] == "global")
         & (df["metric_id"] == "pct")
     ]
- 
+
     if data.empty:
         print("No occupation data available.")
         return
- 
+
     top = (
         data.groupby(["source", "node_name"])["value"]
         .mean()
@@ -143,22 +148,22 @@ def plot_occupation(df):
         .groupby("source")
         .head(10)
     )
- 
+
     for source in top["source"].unique():
         subset = top[top["source"] == source]
- 
+
         plt.figure(figsize=(9, 6))
         plt.barh(subset["node_name"], subset["value"])
         plt.title(f"Top Occupation Usage — {source}")
         plt.xlabel("Percentage")
         plt.gca().invert_yaxis()
         plt.tight_layout()
- 
+
         filename = "occupation_claude.png" if source == "Claude.ai" else "occupation_api.png"
         plt.savefig(OUTPUT_DIR / filename, dpi=300)
         plt.close()
- 
- 
+
+
 def plot_artifact_type_mix(df, top_n=12):
     """NEW — how do businesses (1P API) and individuals (Claude.ai)
     actually use AI, in terms of the kind of output produced? Compares
@@ -173,30 +178,30 @@ def plot_artifact_type_mix(df, top_n=12):
         & (df["metric_id"].str.startswith("artifact_"))
         & (df["metric_id"].str.endswith("_pct"))
     ]
- 
+
     if data.empty:
         print("No artifact-type data available.")
         return
- 
+
     pivot = data.pivot_table(
         index="metric_id", columns="source", values="value", aggfunc="mean"
     ).dropna(how="all")
- 
+
     if pivot.empty:
         print("No artifact-type data present in both sources.")
         return
- 
+
     # keep the top_n types by their largest share in either source
     pivot["_max"] = pivot.max(axis=1)
     pivot = pivot.sort_values("_max", ascending=True).drop(columns="_max").tail(top_n)
- 
+
     pivot.index = (
         pivot.index.str.replace("artifact_", "", regex=False)
         .str.replace("_pct", "", regex=False)
         .str.replace("_", " ", regex=False)
         .str.title()
     )
- 
+
     ax = pivot.plot(kind="barh", figsize=(9, 8))
     plt.xlabel("Share of traffic (%)")
     plt.title(f"Top {top_n} Output Types: Businesses (1P API) vs. Individuals (Claude.ai)")
@@ -204,14 +209,14 @@ def plot_artifact_type_mix(df, top_n=12):
     plt.tight_layout()
     plt.savefig(OUTPUT_DIR / "artifact_type_mix.png", dpi=300)
     plt.close()
- 
+
     print(f"\nArtifact/output type mix (top {top_n} by max share):")
     print(pivot.round(1).to_string())
- 
- 
+
+
 def plot_occupation_category_gap(df, min_group_count=3):
     """FIX #1 — does the automation gap differ by occupation category?
- 
+
     Rolls detailed SOC occupations up to their 23 major groups and
     compares the mean automation share of each group, Claude.ai vs.
     1P API. Answers Q3's second question directly, instead of only
@@ -219,55 +224,76 @@ def plot_occupation_category_gap(df, min_group_count=3):
     appear in both sources' top-10 lists.
     """
     df = add_major_group(df)
- 
+
     base = df[
         (df["category_name"] == "soc_occupation")
         & (df["geo_level"] == "global")
         & (df["metric_id"] == "collaboration_bucket_automation_pct")
         & (df["major_group"].notna())
     ]
- 
+
     if base.empty:
         print("No occupation-category collaboration data available.")
         return
- 
+
     # require a minimum number of detailed occupations per group per source
     # so a single noisy occupation can't stand in for a whole category
     counts = base.groupby(["source", "major_group"])["node_name"].nunique()
     valid_groups = counts[counts >= min_group_count].index
- 
+
     base = base[
         base.set_index(["source", "major_group"]).index.isin(valid_groups)
     ]
- 
+
     pivot = base.pivot_table(
         index="major_group", columns="source", values="value", aggfunc="mean"
     ).dropna()
- 
+
     if pivot.empty:
         print("No occupation categories present in both sources with enough data.")
         return
- 
+
     pivot["gap"] = pivot["1P API"] - pivot["Claude.ai"]
     pivot = pivot.sort_values("gap")
- 
-    plt.figure(figsize=(9, 8))
-    colors = ["steelblue" if g < 0 else "crimson" for g in pivot["gap"]]
-    plt.barh(pivot.index, pivot["gap"], color=colors)
-    plt.axvline(0, color="black", linewidth=0.8)
-    plt.xlabel("Automation-share gap, percentage points (1P API − Claude.ai)")
-    plt.title("Automation Gap by Occupation Category")
+
+    # Grouped bar of the actual automation % per source, not just the gap.
+    # The gap alone can't distinguish "95% vs 50%" from "60% vs 15%" — same
+    # gap, very different stories — and since every category has a positive
+    # gap here, a diverging (red/blue by sign) chart would render as a single
+    # color throughout, which hides more than it shows. This version plots
+    # both sources' actual levels, still sorted by gap size, and annotates
+    # the gap at the end of each pair of bars.
+    fig, ax = plt.subplots(figsize=(10, 9))
+    y = np.arange(len(pivot))
+    bar_h = 0.38
+
+    ax.barh(y + bar_h / 2, pivot["1P API"], height=bar_h, label="1P API", color="#1f77b4")
+    ax.barh(y - bar_h / 2, pivot["Claude.ai"], height=bar_h, label="Claude.ai", color="#ff7f0e")
+
+    ax.set_yticks(y)
+    ax.set_yticklabels(pivot.index)
+    ax.set_xlabel("Automation share of traffic (%)")
+    ax.set_title("Automation Share by Occupation Category\n(sorted by gap size; label = gap in percentage points)")
+    ax.set_xlim(0, 108)
+    ax.legend(loc="lower right")
+
+    for yi, (api_val, claude_val, gap) in enumerate(
+        zip(pivot["1P API"], pivot["Claude.ai"], pivot["gap"])
+    ):
+        ax.text(max(api_val, claude_val) + 1.5, yi, f"+{gap:.0f} pts",
+                 va="center", fontsize=8, color="dimgray")
+
     plt.tight_layout()
     plt.savefig(OUTPUT_DIR / "occupation_category_gap.png", dpi=300)
     plt.close()
- 
+
     print("\nAutomation share by occupation category (1P API vs. Claude.ai):")
     print(pivot.round(1).to_string())
- 
- 
+
+
 def plot_automation_work_only(df, work_threshold=60.0):
     """FIX #2 — control for the use-case mix confound.
- 
+
     Restricts the automation-vs-augmentation comparison to occupations
     that are predominantly WORK use cases (>= work_threshold%) in BOTH
     sources, usage-weighted. This holds "the task is work" roughly fixed
@@ -275,20 +301,20 @@ def plot_automation_work_only(df, work_threshold=60.0):
     once the personal/coursework mix difference is controlled for.
     """
     base = df[(df["category_name"] == "soc_occupation") & (df["geo_level"] == "global")]
- 
+
     work_share = base[base["metric_id"] == "use_case_work_pct"]
     work_wide = work_share.pivot_table(
         index="node_name", columns="source", values="value", aggfunc="mean"
     ).dropna()
- 
+
     matched_nodes = work_wide[
         (work_wide["Claude.ai"] >= work_threshold) & (work_wide["1P API"] >= work_threshold)
     ].index
- 
+
     if len(matched_nodes) == 0:
         print(f"No occupations exceed {work_threshold}% work-share in both sources.")
         return
- 
+
     usage = (
         base[base["metric_id"] == "pct"]
         .groupby(["source", "node_name"])["value"]
@@ -296,16 +322,16 @@ def plot_automation_work_only(df, work_threshold=60.0):
         .rename("usage_pct")
         .reset_index()
     )
- 
+
     collab = base[
         base["metric_id"].isin(COLLAB_METRICS) & base["node_name"].isin(matched_nodes)
     ].merge(usage, on=["source", "node_name"], how="left")
     collab["usage_pct"] = collab["usage_pct"].fillna(0)
- 
+
     def wavg(g):
         weights = g["usage_pct"].to_numpy() + 1e-9  # avoid all-zero weights
         return np.average(g["value"].to_numpy(), weights=weights)
- 
+
     result = (
         collab.groupby(["source", "metric_id"])
         .apply(wavg, include_groups=False)
@@ -313,11 +339,11 @@ def plot_automation_work_only(df, work_threshold=60.0):
         .reset_index()
         .pivot(index="source", columns="metric_id", values="value")
     )
- 
+
     ax = result.plot(kind="bar")
     for container in ax.containers:
         ax.bar_label(container, fmt="%.1f")
- 
+
     plt.title(
         f"Automation vs. Augmentation\n(Work-Dominant Occupations Only, "
         f"\u2265{work_threshold:.0f}% Work Share, Usage-Weighted)"
@@ -328,27 +354,27 @@ def plot_automation_work_only(df, work_threshold=60.0):
     plt.tight_layout()
     plt.savefig(OUTPUT_DIR / "collaboration_work_only.png", dpi=300)
     plt.close()
- 
+
     print(f"\nMatched {len(matched_nodes)} occupations with >= {work_threshold}% "
           f"work share in both sources:")
     print(result.round(1).to_string())
- 
- 
+
+
 def main():
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
- 
+
     df = load_data()
- 
+
     plot_collaboration(df)
     plot_use_case(df)
     plot_occupation(df)
     plot_artifact_type_mix(df)
     plot_occupation_category_gap(df)
     plot_automation_work_only(df)
- 
+
     print("\nProfile plots created successfully.")
     print(f"Output directory: {OUTPUT_DIR}")
- 
- 
+
+
 if __name__ == "__main__":
     main()
