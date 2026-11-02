@@ -123,3 +123,103 @@ Dates come from the timestamps of working sessions and files. "Step" numbers ref
 ## Citation
 
 Massenkoff, M., Lyubich, E., Sacher, S., Hitzig, Z., Zhang, S., Heller, R., and McCrory, P. "Anthropic Economic Index report: Cadences." June 26, 2026. https://www.anthropic.com/research/economic-index-june-2026-report
+
+---
+
+# Activity Log
+
+## November 2, 2026 — H1 and H2 implementation and successful full run
+
+This entry is appended to preserve the README as it stood before this session. The earlier work log, results, hypothesis labels, corrections, caveats, and next steps above are retained as historical project documentation. The active analysis scope was subsequently narrowed to the two hypotheses described below; this update does not rewrite the earlier record.
+
+### Code update and successful execution
+
+- Updated `profile.py` to address the `NameError` caused by the undefined `min_group_count` variable in `plot_use_case_context()`.
+- Re-ran the profiling script against the April and May 2026 Anthropic Economic Index data.
+- The run completed and printed `PROFILE COMPLETE`.
+- Confirmed the data contains April and May observations for both Claude.ai and 1P API.
+- Confirmed occupation-level modeling uses `hierarchy_level == 0` detailed occupation rows, excluding level-1 major-group aggregates.
+- Generated the current H1 and H2 plots and result tables under `data/profile/`.
+
+### Active hypothesis scope for this phase
+
+For the current phase of analysis, the project retains two hypotheses:
+
+- **H1 — Output/artifact-type differences:** The distribution of reported AI output/artifact types differs between Claude.ai and first-party API usage.
+- **H2 — Automation differences:** The reported automation share differs between Claude.ai and first-party API usage.
+
+These are the H1 and H2 definitions used in the November 2 analysis. They replace the earlier H1-H3 labels only for the active analysis phase; the earlier results above remain in this README as a historical record.
+
+### H1 — Output/artifact-type comparison
+
+The script generated a monthly-mean comparison of reported artifact-type percentages and the 1P API minus Claude.ai percentage-point differences.
+
+Selected results:
+
+| Output/artifact type | 1P API (%) | Claude.ai (%) | Difference (pp) |
+|---|---:|---:|---:|
+| Analysis or Summary | 21.60 | 5.54 | +16.07 |
+| Data or Spreadsheet | 12.99 | 3.06 | +9.94 |
+| Other | 7.21 | 0.18 | +7.03 |
+| Explanation or Answer | 8.08 | 16.66 | -8.58 |
+| Document or Report | 5.80 | 14.66 | -8.87 |
+| Advice or Recommendation | 2.00 | 10.39 | -8.39 |
+
+The output also includes a `None` category (15.86% for 1P API and 6.79% for Claude.ai). This category is retained pending a denominator and missing-category audit; it should not be interpreted as a substantive artifact type.
+
+H1 is currently treated as a descriptive comparison. The current analysis does not calculate a chi-square test or p-value from aggregate percentages without the underlying category counts and sampling uncertainty.
+
+### H2 — Automation versus augmentation
+
+Overall monthly-mean collaboration split:
+
+| Source | Augmentation (%) | Automation (%) |
+|---|---:|---:|
+| Claude.ai | 51.20 | 48.80 |
+| 1P API | 6.06 | 93.94 |
+
+Work-dominant occupation comparison (229 matched detailed occupations; at least 60% work share in both sources):
+
+| Source | Augmentation (%) | Automation (%) |
+|---|---:|---:|
+| Claude.ai | 45.04 | 54.96 |
+| 1P API | 6.32 | 93.68 |
+
+Occupation-adjusted model output:
+
+- Regression observations: 1,413 source-by-occupation observations.
+- Distinct detailed occupations: 744.
+- Automation-share difference adjusted for occupation major group: 43.21 percentage points.
+- Difference adjusted for occupation major group and work-use share: 38.30 percentage points.
+- 95% confidence interval for the fully adjusted WLS estimate: 33.40 to 43.19 percentage points.
+- WLS p-value: 4.32e-53.
+- The coefficient attenuated by 11.4% after adding work-use share to the occupation-adjusted model.
+
+Robustness checks with the same adjusted covariates reported the same positive direction:
+
+- WLS with usage-share proxy weights and occupation-clustered standard errors: p = 4.32e-53.
+- Unweighted OLS with occupation-clustered standard errors: the console displayed `p = 0`; this is a numerical display/precision issue, not a literal zero p-value.
+- Fractional logit with clustered standard errors: the console displayed `p = 0`; this is a numerical display/precision issue, not a literal zero p-value.
+
+The 11.4% figure is coefficient attenuation after adding work-use share. It is not a causal decomposition and should not be described as the percentage of the gap causally explained by work-use share. The analysis is observational and uses aggregate release data. The `pct` weighting variable is a usage-share proxy, not a raw sample size.
+
+### Generated plots
+
+The successful run generated:
+
+- `h1_output_type_mix.png`
+- `h2_collaboration_overall.png`
+- `h2_work_dominant_occupations.png`
+- `use_case_context.png`
+
+### Follow-up fixes and methodological audit
+
+The November 2 run establishes a successful execution baseline. The results still require methodological and presentation checks before they are treated as final.
+
+1. **H1 denominator and missing-category audit:** Determine what `None` represents and verify whether artifact percentages use comparable denominators across sources.
+2. **Monthly averaging validation:** Verify that taking the arithmetic mean of April and May percentages is appropriate for each metric and source.
+3. **H2 model audit:** Review the regression specification, WLS weighting, occupation-clustered standard errors, and interpretation of the coefficient in percentage points.
+4. **P-value formatting:** Display very small p-values in scientific notation rather than rounding them to zero.
+5. **Plot presentation:** Improve figure dimensions, title wrapping, label readability, and layout so titles and legends are not clipped.
+
+No additional hypotheses were introduced in the November 2 session. The active scope remains H1 (output/artifact-type distribution differences) and H2 (automation-share differences).

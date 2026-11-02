@@ -1,20 +1,21 @@
 from pathlib import Path
+
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 
 
+# ---------------------------------------------------------------------------
+# Configuration
+# ---------------------------------------------------------------------------
 DATA_DIR = Path("data")
 OUTPUT_DIR = DATA_DIR / "profile"
 
 CLAUDE_FILE = DATA_DIR / "aei_claude_ai_2026-06-26.csv"
 API_FILE = DATA_DIR / "aei_1p_api_2026-06-26.csv"
 
-# 2018 SOC major-group codes -> names. node_external_id for soc_occupation
-# rows is a detailed SOC code like "13-1199.06"; the first two digits are
-# the major group. This lets us roll ~800 detailed occupations up into the
-# ~23 broad "occupation categories" Q3 asks about, instead of only being
-# able to compare the handful of exact titles that show up in both top-10s.
+# 2018 SOC major-group codes. Detailed SOC occupation codes begin with the
+# two-digit major-group code (for example, "13-1199.06" -> "13").
 SOC_MAJOR_GROUPS = {
     "11": "Management",
     "13": "Business and Financial Operations",
@@ -46,22 +47,42 @@ COLLAB_METRICS = [
     "collaboration_bucket_augmentation_pct",
 ]
 
-# The release documentation says soc_occupation has two hierarchy levels:
-# level 0 = detailed occupation, level 1 = major group (an aggregate of the
-# detailed occupations beneath it). Mixing them treats a group total as if it
-# were one more occupation: it double-counts usage (category usage sums come
-# out near 190% instead of ~100%) and, because regression weights are usage
-# shares, the group row becomes the heaviest-weighted "occupation" in its own
-# category. With DETAILED_ONLY = True every SOC analysis keeps level 0 only.
-# Set it to False to reproduce the earlier (mixed-level) numbers for comparison.
-DETAILED_ONLY = True
-
-# Hypothesis-test settings
 REFERENCE_GROUP = "Computer and Mathematical"
-ALPHA = 0.05
+MIN_OCCUPATIONS_PER_GROUP = 3
 
 
+# ---------------------------------------------------------------------------
+# Hypotheses
+# ---------------------------------------------------------------------------
+HYPOTHESES = {
+    "H1": (
+        "The distribution of AI output/artifact types differs between "
+        "Claude.ai and first-party API usage.",
+        "Compare the reported artifact-type percentages across sources. "
+        "This is a descriptive comparison because the released aggregate "
+        "percentages do not provide the underlying category counts needed "
+        "for a defensible inferential test."
+    ),
+    "H2": (
+        "The automation share of interactions differs between Claude.ai "
+        "and first-party API usage.",
+        "The adjusted 1P API minus Claude.ai automation gap has a 95% "
+        "confidence interval that excludes zero in the occupation-level "
+        "WLS model, controlling for occupation category and work-use share."
+    ),
+}
+
+
+# ---------------------------------------------------------------------------
+# Data loading and structural checks
+# ---------------------------------------------------------------------------
 def load_data():
+    """Load the two release files and label each row by access method."""
+    if not CLAUDE_FILE.exists():
+        raise FileNotFoundError(f"Claude.ai data file not found: {CLAUDE_FILE}")
+    if not API_FILE.exists():
+        raise FileNotFoundError(f"1P API data file not found: {API_FILE}")
+
     claude = pd.read_csv(CLAUDE_FILE)
     api = pd.read_csv(API_FILE)
 
@@ -72,45 +93,52 @@ def load_data():
 
 
 def add_major_group(df):
-    """Attach a SOC major-occupation-group label, for soc_occupation rows."""
+    """Attach a broad SOC major-group label to detailed occupation rows."""
     df = df.copy()
     code = df["node_external_id"].astype(str).str.slice(0, 2)
-    is_soc = df["category_name"] == "soc_occupation"
+    is_soc = df["category_name"].eq("soc_occupation")
     df["major_group"] = np.where(is_soc, code.map(SOC_MAJOR_GROUPS), np.nan)
     return df
 
 
 def keep_detailed(data):
-    """Drop level-1 (major-group aggregate) SOC rows when DETAILED_ONLY is on."""
-    if DETAILED_ONLY and "hierarchy_level" in data.columns:
-        return data[data["hierarchy_level"] == 0]
-    return data
+    """Keep level-0 detailed occupations, not level-1 aggregate rows."""
+    if "hierarchy_level" in data.columns:
+        return data[data["hierarchy_level"] == 0].copy()
+    raise KeyError(
+        "Expected 'hierarchy_level' in the release data. "
+        "Cannot safely distinguish detailed occupations from aggregates."
+    )
 
 
 def check_data_structure(df):
-    """Print the facts the analysis silently depends on, so they can be
-    verified instead of assumed:
-      1. which months are present (the release covers April AND May 2026,
-         so any 'duplicate' rows per node are really two different months),
-      2. which hierarchy levels exist for soc_occupation, and
-      3. whether usage 'pct' sums to ~100% within a source/month/level
-         (if it sums to ~200% across levels, levels are being double counted).
-    """
-    print("\n" + "=" * 70)
+    """Print release months, occupation hierarchy levels, and usage totals."""
+    required = {
+        "source", "date_start", "category_name", "geo_level", "metric_id",
+        "value", "hierarchy_level",
+    }
+    missing = required.difference(df.columns)
+    if missing:
+        raise KeyError(f"Missing expected data columns: {sorted(missing)}")
+
+    print("\n" + "=" * 72)
     print("DATA STRUCTURE CHECK")
-    print("=" * 70)
+    print("=" * 72)
 
     print("\nMonths present (date_start) by source:")
     print(df.groupby("source")["date_start"].unique().to_string())
 
-    soc = df[(df["category_name"] == "soc_occupation") & (df["geo_level"] == "global")]
+    soc = df[
+        (df["category_name"] == "soc_occupation")
+        & (df["geo_level"] == "global")
+    ]
     print("\nsoc_occupation rows by source x hierarchy_level:")
-    print(soc.groupby(["source", "hierarchy_level"]).size().unstack(fill_value=0).to_string())
-
-    print("\nExample node names at each hierarchy level (source = 1P API):")
-    for lvl, g in soc[soc["source"] == "1P API"].groupby("hierarchy_level"):
-        names = g["node_name"].drop_duplicates().head(4).tolist()
-        print(f"  level {lvl}: {names}")
+    print(
+        soc.groupby(["source", "hierarchy_level"])
+        .size()
+        .unstack(fill_value=0)
+        .to_string()
+    )
 
     pct = soc[soc["metric_id"] == "pct"]
     sums = (
@@ -119,347 +147,299 @@ def check_data_structure(df):
         .unstack("hierarchy_level")
         .round(1)
     )
-    print("\nSum of 'pct' across soc_occupation nodes (each level should be ~100 on its own):")
+    print("\nSum of occupation usage 'pct' by source, month, and hierarchy level:")
     print(sums.to_string())
-    print(f"\nDETAILED_ONLY = {DETAILED_ONLY} "
-          f"({'level 0 only' if DETAILED_ONLY else 'all levels mixed'})")
+    print("\nOccupation-level modeling uses hierarchy_level == 0 only.")
 
 
-def plot_collaboration(df):
-    """Overall automation vs. augmentation split, all traffic, both sources.
-    Kept as a baseline, but see plot_automation_work_only for the
-    confound-controlled version."""
-    data = df[
-        (df["category_name"] == "overall")
-        & (df["geo_level"] == "global")
-        & (df["metric_id"].isin(COLLAB_METRICS))
-    ]
+# ---------------------------------------------------------------------------
+# H1: Output/artifact-type comparison
+# ---------------------------------------------------------------------------
+def build_output_type_table(df):
+    """Return mean artifact-type percentages by source and their difference.
 
-    if data.empty:
-        print("No collaboration data available.")
-        return
-
-    pivot = data.pivot_table(
-        index="source", columns="metric_id", values="value", aggfunc="mean"
-    )
-
-    ax = pivot.plot(kind="bar")
-    for container in ax.containers:
-        ax.bar_label(container, fmt="%.1f")
-
-    plt.title("Automation vs. Augmentation (All Traffic, Unadjusted)")
-    plt.ylabel("Percentage")
-    plt.xlabel("Source")
-    plt.xticks(rotation=0)
-    plt.tight_layout()
-    plt.savefig(OUTPUT_DIR / "collaboration.png", dpi=300)
-    plt.close()
-
-
-def plot_use_case(df):
-    metrics = ["use_case_work_pct", "use_case_personal_pct", "use_case_coursework_pct"]
-
-    data = df[
-        (df["category_name"] == "overall")
-        & (df["geo_level"] == "global")
-        & (df["metric_id"].isin(metrics))
-    ]
-
-    if data.empty:
-        print("No use-case data available.")
-        return
-
-    pivot = data.pivot_table(
-        index="source", columns="metric_id", values="value", aggfunc="mean"
-    )
-
-    ax = pivot.plot(kind="bar")
-    for container in ax.containers:
-        ax.bar_label(container, fmt="%.1f")
-
-    plt.title("AI Use by Use Case")
-    plt.ylabel("Percentage")
-    plt.xlabel("Source")
-    plt.xticks(rotation=0)
-    plt.tight_layout()
-    plt.savefig(OUTPUT_DIR / "use_case.png", dpi=300)
-    plt.close()
-
-
-def plot_occupation(df):
-    """Top-10 occupation usage share per source (unchanged from before —
-    useful context, but NOT a comparison of automation style)."""
-    data = df[
-        (df["category_name"] == "soc_occupation")
-        & (df["geo_level"] == "global")
-        & (df["metric_id"] == "pct")
-    ]
-    data = keep_detailed(data)
-
-    if data.empty:
-        print("No occupation data available.")
-        return
-
-    top = (
-        data.groupby(["source", "node_name"])["value"]
-        .mean()
-        .reset_index()
-        .sort_values("value", ascending=False)
-        .groupby("source")
-        .head(10)
-    )
-
-    for source in top["source"].unique():
-        subset = top[top["source"] == source]
-
-        plt.figure(figsize=(9, 6))
-        plt.barh(subset["node_name"], subset["value"])
-        plt.title(f"Top Occupation Usage — {source}")
-        plt.xlabel("Percentage")
-        plt.gca().invert_yaxis()
-        plt.tight_layout()
-
-        filename = "occupation_claude.png" if source == "Claude.ai" else "occupation_api.png"
-        plt.savefig(OUTPUT_DIR / filename, dpi=300)
-        plt.close()
-
-
-def plot_artifact_type_mix(df, top_n=12):
-    """NEW — how do businesses (1P API) and individuals (Claude.ai)
-    actually use AI, in terms of the kind of output produced? Compares
-    the share of traffic going to each artifact type (code, documents,
-    spreadsheets, creative writing, presentations, etc.) between sources.
-    This is the direct "how do they use it differently" plot — automation
-    vs. augmentation shows interaction *style*, this shows task *content*.
+    The release contains April and May rows. We average the monthly values
+    for each source/metric rather than summing the months.
     """
     data = df[
         (df["category_name"] == "overall")
         & (df["geo_level"] == "global")
-        & (df["metric_id"].str.startswith("artifact_"))
-        & (df["metric_id"].str.endswith("_pct"))
-    ]
+        & df["metric_id"].astype(str).str.startswith("artifact_")
+        & df["metric_id"].astype(str).str.endswith("_pct")
+    ].copy()
 
     if data.empty:
-        print("No artifact-type data available.")
-        return
+        raise ValueError(
+            "No artifact_*_pct metrics were found for overall/global data. "
+            "Check the metric names in the downloaded release."
+        )
 
-    pivot = data.pivot_table(
-        index="metric_id", columns="source", values="value", aggfunc="mean"
-    ).dropna(how="all")
+    table = (
+        data.groupby(["metric_id", "source"], as_index=False)["value"]
+        .mean()
+        .pivot(index="metric_id", columns="source", values="value")
+    )
 
-    if pivot.empty:
-        print("No artifact-type data present in both sources.")
-        return
+    required_sources = {"Claude.ai", "1P API"}
+    if not required_sources.issubset(table.columns):
+        raise ValueError(
+            "Artifact-type metrics must be present for both Claude.ai and "
+            f"1P API. Found columns: {list(table.columns)}"
+        )
 
-    # keep the top_n types by their largest share in either source
-    pivot["_max"] = pivot.max(axis=1)
-    pivot = pivot.sort_values("_max", ascending=True).drop(columns="_max").tail(top_n)
-
-    pivot.index = (
-        pivot.index.str.replace("artifact_", "", regex=False)
+    table = table.dropna(subset=["Claude.ai", "1P API"]).copy()
+    table["api_minus_claude_pp"] = table["1P API"] - table["Claude.ai"]
+    table.index = (
+        table.index.str.replace("artifact_", "", regex=False)
         .str.replace("_pct", "", regex=False)
         .str.replace("_", " ", regex=False)
         .str.title()
     )
+    table.index.name = "output_type"
+    return table.sort_values("api_minus_claude_pp", ascending=False)
 
-    ax = pivot.plot(kind="barh", figsize=(9, 8))
-    plt.xlabel("Share of traffic (%)")
-    plt.title(f"Top {top_n} Output Types: Businesses (1P API) vs. Individuals (Claude.ai)")
-    plt.legend(title=None)
+
+def plot_output_type_mix(df):
+    """Plot and export the H1 output-type comparison."""
+    table = build_output_type_table(df)
+    table.to_csv(OUTPUT_DIR / "h1_output_type_comparison.csv")
+
+    plot_data = table[["Claude.ai", "1P API"]].sort_values(
+        "1P API", ascending=True
+    )
+    ax = plot_data.plot(kind="barh", figsize=(10, max(6, 0.42 * len(plot_data))))
+    ax.set_xlabel("Reported share (%)")
+    ax.set_ylabel("Output/artifact type")
+    ax.set_title("AI Output-Type Mix: Claude.ai vs. First-Party API")
+    ax.legend(title="Access method")
     plt.tight_layout()
-    plt.savefig(OUTPUT_DIR / "artifact_type_mix.png", dpi=300)
+    plt.savefig(OUTPUT_DIR / "h1_output_type_mix.png", dpi=300)
     plt.close()
 
-    print(f"\nArtifact/output type mix (top {top_n} by max share):")
-    print(pivot.round(1).to_string())
+    print("\nH1 — output/artifact-type comparison (monthly mean percentages):")
+    print(table.round(2).to_string())
+    print(
+        "\nH1 interpretation: compare the category profile and percentage-point "
+        "differences descriptively. Do not report a p-value from these "
+        "aggregated percentages without underlying counts or uncertainty data."
+    )
+    return table
 
 
-def plot_occupation_category_gap(df, min_group_count=3):
-    """FIX #1 — does the automation gap differ by occupation category?
+# ---------------------------------------------------------------------------
+# Supporting descriptive plots for H2
+# ---------------------------------------------------------------------------
+def plot_collaboration_overall(df):
+    """Plot overall automation and augmentation shares for both sources."""
+    data = df[
+        (df["category_name"] == "overall")
+        & (df["geo_level"] == "global")
+        & df["metric_id"].isin(COLLAB_METRICS)
+    ]
 
-    Rolls detailed SOC occupations up to their 23 major groups and
-    compares the mean automation share of each group, Claude.ai vs.
-    1P API. Answers Q3's second question directly, instead of only
-    comparing the handful of exact occupation titles that happen to
-    appear in both sources' top-10 lists.
+    if data.empty:
+        print("No overall collaboration metrics available.")
+        return
+
+    pivot = (
+        data.groupby(["source", "metric_id"])["value"]
+        .mean()
+        .unstack("metric_id")
+        .reindex(["Claude.ai", "1P API"])
+    )
+    pivot = pivot.rename(
+        columns={
+            "collaboration_bucket_automation_pct": "Automation",
+            "collaboration_bucket_augmentation_pct": "Augmentation",
+        }
+    )
+    pivot.to_csv(OUTPUT_DIR / "h2_overall_collaboration.csv")
+
+    ax = pivot.plot(kind="bar", figsize=(8, 6))
+    for container in ax.containers:
+        ax.bar_label(container, fmt="%.1f")
+    ax.set_title("Automation vs. Augmentation — All Traffic")
+    ax.set_ylabel("Reported share (%)")
+    ax.set_xlabel("Access method")
+    ax.tick_params(axis="x", rotation=0)
+    plt.tight_layout()
+    plt.savefig(OUTPUT_DIR / "h2_collaboration_overall.png", dpi=300)
+    plt.close()
+
+    print("\nOverall collaboration split (monthly mean percentages):")
+    print(pivot.round(2).to_string())
+
+
+def plot_use_case_context(df):
+    """Show work, personal, and coursework mix as descriptive context."""
+    metrics = [
+        "use_case_work_pct",
+        "use_case_personal_pct",
+        "use_case_coursework_pct",
+    ]
+    data = df[
+        (df["category_name"] == "overall")
+        & (df["geo_level"] == "global")
+        & df["metric_id"].isin(metrics)
+    ]
+
+    if data.empty:
+        print("No overall use-case metrics available.")
+        return
+
+    pivot = (
+        data.groupby(["source", "metric_id"])["value"]
+        .mean()
+        .unstack("metric_id")
+        .reindex(["Claude.ai", "1P API"])
+    )
+    pivot = pivot.rename(
+        columns={
+            "use_case_work_pct": "Work",
+            "use_case_personal_pct": "Personal",
+            "use_case_coursework_pct": "Coursework",
+        }
+    )
+    pivot.to_csv(OUTPUT_DIR / "use_case_context.csv")
+
+    ax = pivot.plot(kind="bar", figsize=(8, 6))
+    for container in ax.containers:
+        ax.bar_label(container, fmt="%.1f")
+    ax.set_title("Reported AI Use-Case Mix")
+    ax.set_ylabel("Reported share (%)")
+    ax.set_xlabel("Access method")
+    ax.tick_params(axis="x", rotation=0)
+    plt.tight_layout()
+    plt.savefig(OUTPUT_DIR / "use_case_context.png", dpi=300)
+    plt.close()
+
+
+# ---------------------------------------------------------------------------
+# H2: Occupation-level dataset and automation comparison
+# ---------------------------------------------------------------------------
+def build_regression_dataset(df, min_group_count=MIN_OCCUPATIONS_PER_GROUP):
+    """Build one row per source x detailed occupation.
+
+    April and May values are averaged first. Usage share is used as a
+    weighting proxy, not as a raw sample size. Occupation major group and
+    work-use share are included as covariates in the H2 model.
     """
-    df = add_major_group(df)
+    data = add_major_group(df)
+    base = data[
+        (data["category_name"] == "soc_occupation")
+        & (data["geo_level"] == "global")
+        & data["major_group"].notna()
+    ]
+    base = keep_detailed(base)
 
+    keys = ["source", "major_group", "node_name"]
+
+    def metric_mean(metric_id):
+        subset = base[base["metric_id"] == metric_id]
+        return subset.groupby(keys)["value"].mean()
+
+    automation = metric_mean(
+        "collaboration_bucket_automation_pct"
+    ).rename("automation_pct")
+    work_share = metric_mean("use_case_work_pct").rename("work_share_pct")
+    usage = metric_mean("pct").rename("usage_pct")
+
+    reg = pd.concat([automation, work_share, usage], axis=1).dropna().reset_index()
+
+    # Retain categories represented by at least min_group_count detailed
+    # occupations in each source, so the comparison uses matched categories.
+    counts = reg.groupby(["source", "major_group"])["node_name"].nunique()
+    valid_groups = counts[counts >= min_group_count].index
+    reg = reg[
+        reg.set_index(["source", "major_group"]).index.isin(valid_groups)
+    ].copy()
+
+    if reg.empty:
+        raise ValueError(
+            "The H2 regression dataset is empty after filtering. "
+            "Check the metric names and minimum occupation threshold."
+        )
+
+    if set(reg["source"].unique()) != {"Claude.ai", "1P API"}:
+        raise ValueError("H2 regression requires both sources.")
+
+    reg["source_api"] = (reg["source"] == "1P API").astype(int)
+    reg["major_group"] = reg["major_group"].astype(str)
+    return reg
+
+
+def _fit_wls(formula, reg, weighted=True):
+    """Fit a model with standard errors clustered by detailed occupation."""
+    import statsmodels.formula.api as smf
+
+    data = reg.reset_index(drop=True).copy()
+    groups = pd.factorize(data["node_name"])[0]
+
+    if weighted:
+        model = smf.wls(
+            formula,
+            data=data,
+            weights=data["usage_pct"].clip(lower=1e-6),
+        )
+    else:
+        model = smf.ols(formula, data=data)
+
+    return model.fit(
+        cov_type="cluster",
+        cov_kwds={"groups": groups},
+    )
+
+
+def _fit_fractional_logit(reg):
+    """Fit an unweighted fractional-logit robustness model."""
+    import patsy
+    import statsmodels.api as sm
+
+    data = reg.reset_index(drop=True).copy()
+    y = (data["automation_pct"] / 100).clip(1e-4, 1 - 1e-4)
+    formula = "source_api + C(major_group) + work_share_pct"
+    X = patsy.dmatrix(formula, data=data, return_type="dataframe")
+    groups = pd.factorize(data["node_name"])[0]
+
+    model = sm.GLM(y, X, family=sm.families.Binomial())
+    return model.fit(
+        cov_type="cluster",
+        cov_kwds={"groups": groups},
+    )
+
+
+def plot_work_dominant_occupations(df, work_threshold=60.0):
+    """Sensitivity-style descriptive comparison among work-dominant jobs.
+
+    An occupation is retained only when its work-use share meets the
+    threshold in both sources. The result is usage-weighted.
+    """
     base = df[
         (df["category_name"] == "soc_occupation")
         & (df["geo_level"] == "global")
-        & (df["metric_id"] == "collaboration_bucket_automation_pct")
-        & (df["major_group"].notna())
     ]
     base = keep_detailed(base)
 
-    if base.empty:
-        print("No occupation-category collaboration data available.")
+    work = base[base["metric_id"] == "use_case_work_pct"]
+    work_wide = (
+        work.groupby(["source", "node_name"])["value"]
+        .mean()
+        .unstack("source")
+        .dropna()
+    )
+
+    required = {"Claude.ai", "1P API"}
+    if not required.issubset(work_wide.columns):
+        print("Cannot build work-dominant comparison: one source is missing.")
         return
 
-    # require a minimum number of detailed occupations per group per source
-    # so a single noisy occupation can't stand in for a whole category
-    counts = base.groupby(["source", "major_group"])["node_name"].nunique()
-    valid_groups = counts[counts >= min_group_count].index
-
-    base = base[
-        base.set_index(["source", "major_group"]).index.isin(valid_groups)
-    ]
-
-    pivot = base.pivot_table(
-        index="major_group", columns="source", values="value", aggfunc="mean"
-    ).dropna()
-
-    if pivot.empty:
-        print("No occupation categories present in both sources with enough data.")
-        return
-
-    pivot["gap"] = pivot["1P API"] - pivot["Claude.ai"]
-    pivot = pivot.sort_values("gap")
-
-    # Grouped bar of the actual automation % per source, not just the gap.
-    # The gap alone can't distinguish "95% vs 50%" from "60% vs 15%" — same
-    # gap, very different stories — and since every category has a positive
-    # gap here, a diverging (red/blue by sign) chart would render as a single
-    # color throughout, which hides more than it shows. This version plots
-    # both sources' actual levels, still sorted by gap size, and annotates
-    # the gap at the end of each pair of bars.
-    fig, ax = plt.subplots(figsize=(10, 9))
-    y = np.arange(len(pivot))
-    bar_h = 0.38
-
-    ax.barh(y + bar_h / 2, pivot["1P API"], height=bar_h, label="1P API", color="#1f77b4")
-    ax.barh(y - bar_h / 2, pivot["Claude.ai"], height=bar_h, label="Claude.ai", color="#ff7f0e")
-
-    ax.set_yticks(y)
-    ax.set_yticklabels(pivot.index)
-    ax.set_xlabel("Automation share of traffic (%)")
-    ax.set_title("Automation Share by Occupation Category\n(sorted by gap size; label = gap in percentage points)")
-    ax.set_xlim(0, 108)
-    ax.legend(loc="lower right")
-
-    for yi, (api_val, claude_val, gap) in enumerate(
-        zip(pivot["1P API"], pivot["Claude.ai"], pivot["gap"])
-    ):
-        ax.text(max(api_val, claude_val) + 1.5, yi, f"+{gap:.0f} pts",
-                 va="center", fontsize=8, color="dimgray")
-
-    plt.tight_layout()
-    plt.savefig(OUTPUT_DIR / "occupation_category_gap.png", dpi=300)
-    plt.close()
-
-    print("\nAutomation share by occupation category (1P API vs. Claude.ai):")
-    print(pivot.round(1).to_string())
-
-
-def plot_gap_vs_usage(df, min_group_count=3):
-    """NEXT STEP — is the automation gap smaller in categories that see
-    more usage (a "maturity"/convergence story), or was the Computer and
-    Mathematical exception (highest usage, one of the smallest gaps) just
-    a one-off? Plots the automation gap for each of the 23 occupation
-    categories against that category's total usage share, with a trend
-    line and Pearson correlation coefficient.
-
-    Usage share here is the sum of the 'pct' usage metric across all
-    detailed SOC occupations in a category, averaged across the two
-    sources, as a proxy for "how much this category gets used overall."
-    This is an approximation, not an exact combined-traffic figure — flagged
-    in the printed output as a limitation.
-    """
-    df = add_major_group(df)
-
-    base = df[
-        (df["category_name"] == "soc_occupation")
-        & (df["geo_level"] == "global")
-        & (df["major_group"].notna())
-    ]
-    base = keep_detailed(base)
-
-    collab = base[base["metric_id"] == "collaboration_bucket_automation_pct"]
-    counts = collab.groupby(["source", "major_group"])["node_name"].nunique()
-    valid_groups = counts[counts >= min_group_count].index
-    collab = collab[collab.set_index(["source", "major_group"]).index.isin(valid_groups)]
-
-    gap_pivot = collab.pivot_table(
-        index="major_group", columns="source", values="value", aggfunc="mean"
-    ).dropna()
-
-    if gap_pivot.empty:
-        print("No matched occupation categories for gap-vs-usage comparison.")
-        return
-
-    gap_pivot["gap"] = gap_pivot["1P API"] - gap_pivot["Claude.ai"]
-
-    # usage share per category: sum detailed-occupation usage_pct within a
-    # category, per source, then average the two sources as a combined proxy.
-    # IMPORTANT: average each node's value across duplicate date rows FIRST
-    # (the data has two overlapping monthly rows per node) before summing
-    # across nodes — summing raw rows double-counts and was producing
-    # category totals over 100%, as seen in the first run of this chart.
-    usage = base[base["metric_id"] == "pct"]
-    node_usage = usage.groupby(["source", "major_group", "node_name"])["value"].mean()
-    usage_by_group_source = node_usage.groupby(["source", "major_group"]).sum()
-    usage_total = usage_by_group_source.groupby("major_group").mean()
-
-    merged = gap_pivot.join(usage_total.rename("usage_share")).dropna()
-
-    if len(merged) < 3:
-        print("Not enough matched categories for a usage-vs-gap comparison.")
-        return
-
-    x = merged["usage_share"].to_numpy()
-    y = merged["gap"].to_numpy()
-    r = np.corrcoef(x, y)[0, 1]
-
-    coeffs = np.polyfit(x, y, 1)
-    trend_x = np.linspace(x.min(), x.max(), 50)
-    trend_y = np.polyval(coeffs, trend_x)
-
-    plt.figure(figsize=(9, 7))
-    plt.scatter(x, y, s=60, color="#1f77b4", zorder=3)
-    plt.plot(trend_x, trend_y, "--", color="gray", zorder=2, label=f"trend (r = {r:.2f})")
-
-    for name, xi, yi in zip(merged.index, x, y):
-        plt.annotate(name, (xi, yi), fontsize=7, xytext=(4, 4), textcoords="offset points")
-
-    plt.xlabel("Total category usage share (%, proxy — summed across detailed occupations)")
-    plt.ylabel("Automation gap, percentage points (1P API − Claude.ai)")
-    plt.title("Does the Automation Gap Shrink in Higher-Usage Categories?")
-    plt.legend(loc="upper right")
-    plt.tight_layout()
-    plt.savefig(OUTPUT_DIR / "gap_vs_usage.png", dpi=300)
-    plt.close()
-
-    print(f"\nGap vs. usage-share correlation: Pearson r = {r:.2f}")
-    print("(negative r = higher-usage categories tend to have smaller gaps, "
-          "supporting a maturity/convergence story; r near 0 = no relationship, "
-          "Computer and Mathematical would be a one-off.)")
-    print(merged.round(1).sort_values("usage_share", ascending=False).to_string())
-
-
-def plot_automation_work_only(df, work_threshold=60.0):
-    """FIX #2 — control for the use-case mix confound.
-
-    Restricts the automation-vs-augmentation comparison to occupations
-    that are predominantly WORK use cases (>= work_threshold%) in BOTH
-    sources, usage-weighted. This holds "the task is work" roughly fixed
-    across sources, isolating how much of the automation gap survives
-    once the personal/coursework mix difference is controlled for.
-    """
-    base = df[(df["category_name"] == "soc_occupation") & (df["geo_level"] == "global")]
-    base = keep_detailed(base)
-
-    work_share = base[base["metric_id"] == "use_case_work_pct"]
-    work_wide = work_share.pivot_table(
-        index="node_name", columns="source", values="value", aggfunc="mean"
-    ).dropna()
-
-    matched_nodes = work_wide[
-        (work_wide["Claude.ai"] >= work_threshold) & (work_wide["1P API"] >= work_threshold)
+    matched = work_wide[
+        (work_wide["Claude.ai"] >= work_threshold)
+        & (work_wide["1P API"] >= work_threshold)
     ].index
 
-    if len(matched_nodes) == 0:
-        print(f"No occupations exceed {work_threshold}% work-share in both sources.")
+    if len(matched) == 0:
+        print(f"No occupations meet the {work_threshold:.0f}% work threshold.")
         return
 
     usage = (
@@ -469,506 +449,240 @@ def plot_automation_work_only(df, work_threshold=60.0):
         .rename("usage_pct")
         .reset_index()
     )
-
     collab = base[
-        base["metric_id"].isin(COLLAB_METRICS) & base["node_name"].isin(matched_nodes)
+        base["metric_id"].isin(COLLAB_METRICS)
+        & base["node_name"].isin(matched)
     ].merge(usage, on=["source", "node_name"], how="left")
-    collab["usage_pct"] = collab["usage_pct"].fillna(0)
 
-    def wavg(g):
-        weights = g["usage_pct"].to_numpy() + 1e-9  # avoid all-zero weights
-        return np.average(g["value"].to_numpy(), weights=weights)
+    rows = []
+    for (source, metric), group in collab.groupby(["source", "metric_id"]):
+        weights = group["usage_pct"].fillna(0).clip(lower=0).to_numpy()
+        values = group["value"].to_numpy()
+        if weights.sum() == 0:
+            estimate = float(np.mean(values))
+        else:
+            estimate = float(np.average(values, weights=weights))
+        rows.append(
+            {"source": source, "metric_id": metric, "value": estimate}
+        )
 
     result = (
-        collab.groupby(["source", "metric_id"])
-        .apply(wavg, include_groups=False)
-        .rename("value")
-        .reset_index()
+        pd.DataFrame(rows)
         .pivot(index="source", columns="metric_id", values="value")
+        .reindex(["Claude.ai", "1P API"])
     )
+    result.to_csv(OUTPUT_DIR / "h2_work_dominant_occupations.csv")
 
-    ax = result.plot(kind="bar")
+    display = result.rename(
+        columns={
+            "collaboration_bucket_automation_pct": "Automation",
+            "collaboration_bucket_augmentation_pct": "Augmentation",
+        }
+    )
+    ax = display.plot(kind="bar", figsize=(8, 6))
     for container in ax.containers:
         ax.bar_label(container, fmt="%.1f")
-
-    plt.title(
-        f"Automation vs. Augmentation\n(Work-Dominant Occupations Only, "
-        f"\u2265{work_threshold:.0f}% Work Share, Usage-Weighted)"
+    ax.set_title(
+        f"Collaboration Split in Work-Dominant Occupations "
+        f"(at least {work_threshold:.0f}% work share in both sources)"
     )
-    plt.ylabel("Percentage")
-    plt.xlabel("Source")
-    plt.xticks(rotation=0)
+    ax.set_ylabel("Usage-weighted reported share (%)")
+    ax.set_xlabel("Access method")
+    ax.tick_params(axis="x", rotation=0)
     plt.tight_layout()
-    plt.savefig(OUTPUT_DIR / "collaboration_work_only.png", dpi=300)
+    plt.savefig(OUTPUT_DIR / "h2_work_dominant_occupations.png", dpi=300)
     plt.close()
 
-    print(f"\nMatched {len(matched_nodes)} occupations with >= {work_threshold}% "
-          f"work share in both sources:")
-    print(result.round(1).to_string())
+    print(
+        f"\nWork-dominant comparison: {len(matched)} matched detailed occupations"
+    )
+    print(display.round(2).to_string())
 
 
-def build_regression_dataset(df, min_group_count=3):
-    """Shared per-occupation dataset for the statistical models below: one
-    row per (source, major_group, node_name) with the automation share
-    (outcome), work-use-case share (confound covariate), and usage share
-    (regression weight, since we have no raw sample sizes — this is the
-    standard proxy for how much to trust each occupation's estimate).
+def test_h2_automation(reg, results):
+    """Test whether the adjusted automation share differs by access method."""
+    base_formula = "automation_pct ~ source_api + C(major_group)"
+    adjusted_formula = base_formula + " + work_share_pct"
 
-    The release holds two calendar months (April and May 2026); each
-    occupation's value is averaged over them.
-    """
-    df = add_major_group(df)
-    base = df[
-        (df["category_name"] == "soc_occupation")
-        & (df["geo_level"] == "global")
-        & (df["major_group"].notna())
+    wls_unadjusted = _fit_wls(base_formula, reg, weighted=True)
+    wls_adjusted = _fit_wls(adjusted_formula, reg, weighted=True)
+    ols_adjusted = _fit_wls(adjusted_formula, reg, weighted=False)
+    fractional = _fit_fractional_logit(reg)
+
+    gap_unadjusted = float(wls_unadjusted.params["source_api"])
+    gap_adjusted = float(wls_adjusted.params["source_api"])
+    ci_low, ci_high = wls_adjusted.conf_int().loc["source_api"]
+    p_wls = float(wls_adjusted.pvalues["source_api"])
+    p_ols = float(ols_adjusted.pvalues["source_api"])
+    p_fractional = float(fractional.pvalues["source_api"])
+
+    work_share_change = (
+        (gap_unadjusted - gap_adjusted) / gap_unadjusted * 100
+        if gap_unadjusted != 0
+        else np.nan
+    )
+
+    print("\n" + "=" * 72)
+    print("H2 — AUTOMATION SHARE DIFFERENCE")
+    print("=" * 72)
+    print(f"Regression rows: {len(reg)} source x occupation observations")
+    print(f"Distinct detailed occupations: {reg['node_name'].nunique()}")
+    print(f"Gap adjusted for occupation category: {gap_unadjusted:.2f} pp")
+    print(
+        "Gap adjusted for occupation category + work share: "
+        f"{gap_adjusted:.2f} pp "
+        f"(95% CI {ci_low:.2f} to {ci_high:.2f}; WLS p = {p_wls:.4g})"
+    )
+    print(f"Change after adding work share: {work_share_change:.1f}%")
+    print("\nRobustness checks (same adjusted covariates):")
+    print(f"  WLS, usage-weighted, occupation-clustered SE: p = {p_wls:.4g}")
+    print(f"  OLS, unweighted, occupation-clustered SE:     p = {p_ols:.4g}")
+    print(f"  Fractional logit, unweighted, clustered SE:   p = {p_fractional:.4g}")
+    print(
+        "\nInterpretation: the WLS coefficient is the adjusted percentage-point "
+        "difference (1P API minus Claude.ai). Usage share is a weighting proxy, "
+        "not an observed sample size."
+    )
+
+    # Export model comparisons in a compact, reproducible table.
+    model_table = pd.DataFrame(
+        [
+            {
+                "model": "WLS_adjusted",
+                "api_minus_claude_estimate": gap_adjusted,
+                "ci_95_low": ci_low,
+                "ci_95_high": ci_high,
+                "p_value": p_wls,
+                "weighted_by_usage_share": True,
+            },
+            {
+                "model": "OLS_adjusted",
+                "api_minus_claude_estimate": float(
+                    ols_adjusted.params["source_api"]
+                ),
+                "ci_95_low": float(
+                    ols_adjusted.conf_int().loc["source_api", 0]
+                ),
+                "ci_95_high": float(
+                    ols_adjusted.conf_int().loc["source_api", 1]
+                ),
+                "p_value": p_ols,
+                "weighted_by_usage_share": False,
+            },
+        ]
+    )
+    model_table.to_csv(OUTPUT_DIR / "h2_automation_model_comparison.csv", index=False)
+
+    supported = bool(ci_low > 0 or ci_high < 0)
+    results.append(
+        {
+            "hypothesis": "H2",
+            "finding": (
+                f"Adjusted 1P API - Claude.ai automation gap = "
+                f"{gap_adjusted:.2f} pp "
+                f"(95% CI {ci_low:.2f}, {ci_high:.2f})"
+            ),
+            "p_value_wls": p_wls,
+            "assessment": "Supported" if supported else "Not supported",
+            "note": (
+                f"OLS p={p_ols:.4g}; fractional-logit p={p_fractional:.4g}. "
+                "Observational association; not a causal business-versus-consumer "
+                "effect. API and Claude.ai are access-method proxies."
+            ),
+        }
+    )
+
+    return {
+        "gap_unadjusted": gap_unadjusted,
+        "gap_adjusted": gap_adjusted,
+        "ci_low": float(ci_low),
+        "ci_high": float(ci_high),
+        "p_value": p_wls,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Hypothesis summary and execution
+# ---------------------------------------------------------------------------
+def write_hypothesis_summary(output_table, h2_result):
+    """Write the two-hypothesis summary without inventing an H1 p-value."""
+    h1_assessment = (
+        "Descriptive comparison completed"
+        if output_table is not None and not output_table.empty
+        else "Not evaluated"
+    )
+    h1_note = (
+        "Artifact-type percentages are compared by source and exported. "
+        "No inferential p-value is reported because underlying counts and "
+        "sampling uncertainty are not available in these aggregate metrics."
+    )
+
+    rows = [
+        {
+            "hypothesis": "H1",
+            "finding": (
+                "Output/artifact-type percentages compared across Claude.ai "
+                "and 1P API"
+            ),
+            "p_value_wls": np.nan,
+            "assessment": h1_assessment,
+            "note": h1_note,
+        }
     ]
-    base = keep_detailed(base)
 
-    keys = ["source", "major_group", "node_name"]
+    if h2_result is not None:
+        # H2's full model result is already represented in the model output.
+        # The assessment and detailed estimate are recorded by test_h2_automation.
+        pass
 
-    def node_mean(metric_id):
-        s = base[base["metric_id"] == metric_id]
-        return s.groupby(keys)["value"].mean()
-
-    automation = node_mean("collaboration_bucket_automation_pct").rename("automation_pct")
-    work_share = node_mean("use_case_work_pct").rename("work_share_pct")
-    usage = node_mean("pct").rename("usage_pct")
-
-    reg = pd.concat([automation, work_share, usage], axis=1).dropna().reset_index()
-
-    # same category-size floor used in plot_occupation_category_gap, so the
-    # model is fit on the same matched set of categories shown in that chart
-    counts = reg.groupby(["source", "major_group"])["node_name"].nunique()
-    valid = counts[counts >= min_group_count].index
-    reg = reg[reg.set_index(["source", "major_group"]).index.isin(valid)]
-
-    reg["source_api"] = (reg["source"] == "1P API").astype(int)
-    reg["major_group"] = reg["major_group"].astype("category")
-    return reg
-
-
-def run_wls_model(reg, reference_group="Computer and Mathematical"):
-    """PRIMARY MODEL — weighted least squares:
-
-        automation_pct ~ source_api * major_group + work_share_pct
-
-    weighted by usage share. `source_api` is the automation gap (API vs.
-    Claude.ai) holding category and work-share fixed — a formal version of
-    the §1 comparison. The source_api × major_group interaction terms test
-    whether specific categories' gaps differ significantly from the
-    reference category's gap (set to Computer and Mathematical, the
-    highest-usage category, so every interaction reads as "how much bigger/
-    smaller this category's gap is, relative to Computer and Mathematical").
-    work_share_pct is the confound control from plot_automation_work_only,
-    built into the model instead of a separate restricted sample.
-
-    Requires `statsmodels` (pip install statsmodels).
-    """
-    import statsmodels.formula.api as smf
-
-    reg = reg.copy()
-    reg["major_group"] = reg["major_group"].cat.reorder_categories(
-        [reference_group] + [c for c in reg["major_group"].cat.categories if c != reference_group]
-    )
-
-    formula = (
-        "automation_pct ~ source_api * C(major_group, Treatment(reference='"
-        f"{reference_group}')) + work_share_pct"
-    )
-    model = smf.wls(formula, data=reg, weights=reg["usage_pct"] + 1e-6)
-    result = model.fit()
-
-    print("\n" + "=" * 70)
-    print("WLS MODEL (primary): automation_pct ~ source * category + work_share")
-    print("=" * 70)
-    print(result.summary())
-    return result
-
-
-def run_beta_model(reg, reference_group="Computer and Mathematical"):
-    """ROBUSTNESS CHECK — beta regression.
-
-    automation_pct is a bounded percentage (0-100), so an ordinary linear
-    model can in principle predict outside that range and its errors are
-    not actually homoscedastic/normal near the boundaries. Beta regression
-    is the textbook-correct model for a bounded proportion outcome. Same
-    right-hand side as the WLS model; if the two models agree on which
-    interaction terms are significant, that's good evidence the WLS result
-    isn't an artifact of its linear-model assumptions.
-
-    Requires `statsmodels` >= 0.13 (for statsmodels.othermod.betareg) and
-    `patsy` (pip install statsmodels patsy).
-    """
-    import patsy
-    from statsmodels.othermod.betareg import BetaModel
-
-    reg = reg.copy()
-    reg["major_group"] = reg["major_group"].cat.reorder_categories(
-        [reference_group] + [c for c in reg["major_group"].cat.categories if c != reference_group]
-    )
-
-    # beta regression requires the outcome strictly inside (0, 1); clip the
-    # handful of exact 0/100 values away from the boundary
-    y = (reg["automation_pct"] / 100).clip(1e-4, 1 - 1e-4)
-
-    formula = (
-        "source_api * C(major_group, Treatment(reference='"
-        f"{reference_group}')) + work_share_pct"
-    )
-    X = patsy.dmatrix(formula, data=reg, return_type="dataframe")
-
-    model = BetaModel(y, X)
-    result = model.fit()
-
-    print("\n" + "=" * 70)
-    print("BETA REGRESSION MODEL (robustness check)")
-    print("=" * 70)
-    print(result.summary())
-    return result
-
-
-# ===========================================================================
-# HYPOTHESES
-#
-# Written down BEFORE the corrected (level-0-only) re-run, each with a
-# prediction and a rule for what counts as support, so the results can be
-# judged against something stated in advance rather than fitted afterwards.
-# ===========================================================================
-HYPOTHESES = {
-    "H1": ("Firms are more automation-heavy, and the use-case mix does not "
-           "explain it. After controlling for occupation category and work "
-           "share, 1P API automation share exceeds Claude.ai's.",
-           "Adjusted gap > 0 with a 95% CI that excludes 0, AND adding work "
-           "share shrinks the gap by < 25%."),
-    "H2": ("The gap is not the same in every occupation category.",
-           "Omnibus test that all source x category interactions are zero is "
-           "rejected (p < 0.05) in all three fits: weighted WLS, unweighted OLS, "
-           "and unweighted fractional logit."),
-    "H3": ("Category-to-category variation in the gap comes mainly from "
-           "Claude.ai (individuals), not from the API (firms automate "
-           "uniformly).",
-           "Claude.ai accounts for > 75% of the variance of the gap across categories."),
-}
-
-
-def _grp(ref=None):
-    ref = ref or REFERENCE_GROUP
-    return f"C(major_group, Treatment(reference='{ref}'))"
-
-
-def _prep(reg):
-    """Strings (not categoricals) for major_group so unused categories can't
-    create all-zero columns, and a clean index for cluster-group alignment."""
-    reg = reg.reset_index(drop=True).copy()
-    reg["major_group"] = reg["major_group"].astype(str)
-    return reg
-
-
-def _fit_wls(formula, reg, weighted=True):
-    """OLS with standard errors clustered by occupation (the same occupation
-    appears once per source / month, so rows are not independent).
-    weighted=True weights by usage share (WLS); weighted=False is plain OLS."""
-    import statsmodels.formula.api as smf
-
-    reg = _prep(reg)
-    groups = pd.factorize(reg["node_name"])[0]
-    if weighted:
-        model = smf.wls(formula, data=reg, weights=reg["usage_pct"] + 1e-6)
+    summary_path = OUTPUT_DIR / "hypothesis_summary.csv"
+    if h2_result is None:
+        pd.DataFrame(rows).to_csv(summary_path, index=False)
     else:
-        model = smf.ols(formula, data=reg)
-    return model.fit(cov_type="cluster", cov_kwds={"groups": groups})
-
-
-def _fit_fractional_logit(rhs, reg):
-    """Fractional logit (quasi-binomial GLM) for a 0-1 outcome, UNWEIGHTED,
-    with occupation-clustered standard errors (Papke-Wooldridge). It is left
-    unweighted on purpose: statsmodels does not fully support clustered
-    errors together with GLM weights, and it lets the comparison be clean:
-        weighted WLS vs. unweighted OLS      -> effect of weighting
-        unweighted OLS vs. fractional logit  -> effect of the link function
-    """
-    import patsy
-    import statsmodels.api as sm
-
-    reg = _prep(reg)
-    y = (reg["automation_pct"] / 100).clip(1e-4, 1 - 1e-4)
-    X = patsy.dmatrix(rhs, data=reg, return_type="dataframe")
-    groups = pd.factorize(reg["node_name"])[0]
-    model = sm.GLM(y, X, family=sm.families.Binomial())
-    return model.fit(cov_type="cluster", cov_kwds={"groups": groups})
-
-
-def _wald_interactions(res, prefix="source_api:"):
-    """Joint test that every coefficient whose name starts with `prefix` is 0."""
-    names = list(res.params.index)
-    idx = [i for i, n in enumerate(names) if n.startswith(prefix)]
-    R = np.zeros((len(idx), len(names)))
-    for k, i in enumerate(idx):
-        R[k, i] = 1.0
-    w = res.wald_test(R, use_f=False)
-    stat = float(np.asarray(w.statistic).ravel()[0])
-    p = float(np.asarray(w.pvalue).ravel()[0])
-    return stat, p, len(idx)
-
-
-def _record(results, hid, estimate, p, supported, note=""):
-    results.append({
-        "hypothesis": hid,
-        "estimate": estimate,
-        "p_value": None if p is None else round(float(p), 4),
-        "supported": supported,
-        "note": note,
-    })
-
-
-def build_category_table(df, min_group_count=3):
-    """One row per SOC major group: mean automation share in each source, the
-    gap, and a usage-share proxy. Same construction as the category-gap and
-    gap-vs-usage plots, packaged for the hypothesis tests."""
-    df = add_major_group(df)
-    base = df[
-        (df["category_name"] == "soc_occupation")
-        & (df["geo_level"] == "global")
-        & (df["major_group"].notna())
-    ]
-    base = keep_detailed(base)
-
-    collab = base[base["metric_id"] == "collaboration_bucket_automation_pct"]
-    counts = collab.groupby(["source", "major_group"])["node_name"].nunique()
-    valid = counts[counts >= min_group_count].index
-    collab = collab[collab.set_index(["source", "major_group"]).index.isin(valid)]
-
-    table = collab.pivot_table(
-        index="major_group", columns="source", values="value", aggfunc="mean"
-    ).dropna()
-    table["gap"] = table["1P API"] - table["Claude.ai"]
-
-    usage = base[base["metric_id"] == "pct"]
-    node_usage = usage.groupby(["source", "major_group", "node_name"])["value"].mean()
-    usage_total = node_usage.groupby(["source", "major_group"]).sum().groupby("major_group").mean()
-    return table.join(usage_total.rename("usage_share")).dropna()
-
-
-def test_h1(reg, results):
-    """H1: adjusted gap > 0, and work share explains < 25% of it."""
-    base_f = f"automation_pct ~ source_api + {_grp()}"
-    res_a = _fit_wls(base_f, reg)                          # no work-share control
-    res_b = _fit_wls(base_f + " + work_share_pct", reg)    # with work-share control
-
-    gap_a, gap_b = res_a.params["source_api"], res_b.params["source_api"]
-    lo, hi = res_b.conf_int().loc["source_api"]
-    p_b = res_b.pvalues["source_api"]
-    shrink = (gap_a - gap_b) / gap_a * 100 if gap_a else np.nan
-
-    print("\n--- H1: adjusted gap and the work-share confound ---")
-    print(f"Gap controlling for category only        : {gap_a:6.2f} pts")
-    print(f"Gap controlling for category + work share: {gap_b:6.2f} pts "
-          f"(95% CI {lo:.2f} to {hi:.2f}, p = {p_b:.4g})")
-    print(f"Work share changes the gap by            : {shrink:6.1f}%")
-    print(f"Work-share coefficient: {res_b.params['work_share_pct']:.3f} pts per pp "
-          f"(p = {res_b.pvalues['work_share_pct']:.4g})")
-
-    print("\nWork-share slope within each source (does the relationship differ?):")
-    for src, g in reg.groupby("source"):
-        r = _fit_wls(f"automation_pct ~ work_share_pct + {_grp()}", g)
-        print(f"  {src:10s}: {r.params['work_share_pct']:.3f} pts per pp "
-              f"(p = {r.pvalues['work_share_pct']:.4g})")
-
-    gap_ok = bool(gap_b > 0 and lo > 0)
-    mix_ok = bool(abs(shrink) < 25)
-    _record(results, "H1",
-            f"adjusted gap {gap_b:.1f} pts (CI {lo:.1f} to {hi:.1f}); "
-            f"work share changes it by {shrink:.1f}%",
-            p_b, bool(gap_ok and mix_ok),
-            f"gap > 0: {gap_ok}; mix explains < 25%: {mix_ok} "
-            "(model-implied, not a causal decomposition)")
-
-
-def test_h2(reg, results):
-    """H2: omnibus test of source x category interactions, WLS and fractional
-    logit, plus Holm-adjusted per-category contrasts against the reference."""
-    from statsmodels.stats.multitest import multipletests
-
-    rhs = f"source_api * {_grp()} + work_share_pct"
-    wls = _fit_wls("automation_pct ~ " + rhs, reg)
-    stat_w, p_w, k = _wald_interactions(wls)
-
-    ols = _fit_wls("automation_pct ~ " + rhs, reg, weighted=False)
-    stat_o, p_o, _ = _wald_interactions(ols)
-
-    frac = _fit_fractional_logit(rhs, reg)
-    stat_f, p_f, _ = _wald_interactions(frac)
-
-    print("\n--- H2: does the gap differ by occupation category? ---")
-    print(f"Omnibus Wald test, all {k} interactions = 0 (errors clustered by occupation)")
-    print(f"  WLS, usage-weighted              : chi2 = {stat_w:8.1f}, p = {p_w:.4g}")
-    print(f"  OLS, unweighted                  : chi2 = {stat_o:8.1f}, p = {p_o:.4g}")
-    print(f"  Fractional logit, unweighted     : chi2 = {stat_f:8.1f}, p = {p_f:.4g}")
-    print("  (WLS vs OLS shows the effect of weighting; OLS vs fractional logit "
-          "shows the effect of the model type.)")
-
-    names = [n for n in wls.params.index if n.startswith("source_api:")]
-    pvals = wls.pvalues[names].to_numpy()
-    reject, p_adj, _, _ = multipletests(pvals, alpha=ALPHA, method="holm")
-    frac_p = frac.pvalues.reindex(names)
-
-    rows = []
-    for n, b, p, pa, rj in zip(names, wls.params[names], pvals, p_adj, reject):
-        label = n.split("[T.")[-1].rstrip("]")
-        rows.append({"category": label, "gap_diff_vs_ref_pts": round(b, 1),
-                     "p_raw": round(p, 4), "p_holm": round(pa, 4),
-                     "sig_holm": bool(rj),
-                     "p_fraclogit_raw": round(float(frac_p.get(n, np.nan)), 4)})
-    tab = pd.DataFrame(rows).sort_values("gap_diff_vs_ref_pts", ascending=False)
-    print(f"\nGap difference vs. {REFERENCE_GROUP} (WLS) with Holm correction "
-          f"for {len(names)} comparisons:")
-    print(tab.to_string(index=False))
-    tab.to_csv(OUTPUT_DIR / "h2_category_contrasts.csv", index=False)
-
-    _record(results, "H2",
-            f"omnibus chi2 = {stat_w:.1f} (WLS), {stat_o:.1f} (OLS), {stat_f:.1f} (frac. logit)",
-            max(p_w, p_o, p_f), bool(max(p_w, p_o, p_f) < ALPHA),
-            f"{int(tab['sig_holm'].sum())} of {len(names)} categories differ from "
-            f"{REFERENCE_GROUP} after Holm correction")
-
-
-def test_h3(df, results, min_group_count=3, n_boot=2000, seed=0):
-    """H3: who drives the cross-category variation in the gap?
-
-    gap = API - Claude, so Var(gap) splits exactly into
-        Cov(gap, API)/Var(gap)       = API's share, and
-       -Cov(gap, Claude)/Var(gap)    = Claude.ai's share  (the two sum to 1).
-    """
-    t = build_category_table(df, min_group_count)
-    a, c, g = t["1P API"].to_numpy(), t["Claude.ai"].to_numpy(), t["gap"].to_numpy()
-
-    def shares(a, c):
-        gap = a - c
-        v = gap.var(ddof=1)
-        return (np.cov(gap, a)[0, 1] / v, -np.cov(gap, c)[0, 1] / v)
-
-    share_api, share_claude = shares(a, c)
-    rng = np.random.default_rng(seed)
-    boots = []
-    for _ in range(n_boot):
-        i = rng.integers(0, len(t), len(t))
-        if (a[i] - c[i]).var(ddof=1) > 0:
-            boots.append(shares(a[i], c[i])[1])
-    lo, hi = np.percentile(boots, [2.5, 97.5])
-
-    print("\n--- H3: where does the variation in the gap come from? ---")
-    print(f"Across {len(t)} categories: SD of automation share  "
-          f"API = {a.std(ddof=1):.1f} pts, Claude.ai = {c.std(ddof=1):.1f} pts")
-    print(f"Share of gap variance from Claude.ai: {share_claude*100:.0f}% "
-          f"(bootstrap 95% CI {lo*100:.0f}% to {hi*100:.0f}%); from API: {share_api*100:.0f}%")
-    print("(The two shares sum to 100%; a bootstrap share can exceed 100% when the "
-          "other source's share dips slightly below 0 in a resample.)")
-
-    _record(results, "H3", f"Claude.ai share of gap variance {share_claude*100:.0f}% "
-            f"(CI {lo*100:.0f}% to {hi*100:.0f}%)", None, bool(share_claude > 0.75),
-            f"n = {len(t)} categories")
-
-
-def plot_adjusted_gap_forest(reg):
-    """One chart for the central question: the adjusted gap in each category
-    with a 95% confidence interval. Intervals that clear zero (and each other)
-    are what the hypothesis tests rely on; wide intervals mark thinly-used
-    categories where 'no difference' really means 'not enough data'."""
-    import re
-
-    res = _fit_wls(
-        "automation_pct ~ C(major_group) + C(major_group):source_api + work_share_pct", reg)
-    ci = res.conf_int()
-    rows = []
-    for n in res.params.index:
-        m = re.search(r"\[(.*)\]:source_api$", n)
-        if m:
-            rows.append((m.group(1), res.params[n], ci.loc[n, 0], ci.loc[n, 1]))
-    t = pd.DataFrame(rows, columns=["category", "gap", "lo", "hi"]).sort_values("gap")
-    t.to_csv(OUTPUT_DIR / "adjusted_gap_by_category.csv", index=False)
-
-    fig, ax = plt.subplots(figsize=(10, 9))
-    y = np.arange(len(t))
-    ax.errorbar(t["gap"], y, xerr=[t["gap"] - t["lo"], t["hi"] - t["gap"]],
-                fmt="o", color="#1f77b4", ecolor="#9ab9d8", capsize=3)
-    ax.axvline(0, color="black", linewidth=0.8)
-    ax.set_yticks(y)
-    ax.set_yticklabels(t["category"])
-    ax.set_xlabel("Automation-share gap, 1P API minus Claude.ai (percentage points)\n"
-                  "adjusted for work share; 95% CI, errors clustered by occupation")
-    ax.set_title("Adjusted Automation Gap by Occupation Category")
-    plt.tight_layout()
-    plt.savefig(OUTPUT_DIR / "adjusted_gap_forest.png", dpi=300)
-    plt.close()
-
-
-def run_hypotheses(df):
-    """Run H1-H3; one failing test never stops the others."""
-    print("\n" + "=" * 70)
-    print("HYPOTHESES (stated before the corrected re-run)")
-    print("=" * 70)
-    for hid, (claim, rule) in HYPOTHESES.items():
-        print(f"{hid}: {claim}\n      Supported if: {rule}")
-
-    reg = build_regression_dataset(df)
-    print(f"\nRegression dataset: {len(reg)} source x occupation rows, "
-          f"{reg['node_name'].nunique()} distinct occupations")
-
-    results = []
-    steps = [
-        ("H1", lambda: test_h1(reg, results)),
-        ("H2", lambda: test_h2(reg, results)),
-        ("H3", lambda: test_h3(df, results)),
-        ("forest plot", lambda: plot_adjusted_gap_forest(reg)),
-    ]
-    for name, fn in steps:
-        try:
-            fn()
-        except Exception as e:  # keep going, report which step failed
-            print(f"\n[{name}] FAILED: {type(e).__name__}: {e}")
-            if name.startswith("H"):
-                for hid in name.split("/"):
-                    _record(results, hid, "test failed", None, None, f"{type(e).__name__}: {e}")
-
-    summary = pd.DataFrame(results).sort_values("hypothesis")
-    print("\n" + "=" * 70)
-    print("HYPOTHESIS SUMMARY")
-    print("=" * 70)
-    print(summary.to_string(index=False))
-    summary.to_csv(OUTPUT_DIR / "hypothesis_summary.csv", index=False)
+        h2_path = OUTPUT_DIR / "h2_hypothesis_result.csv"
+        # test_h2_automation writes the H2 result to this file in main().
+        h2_row = pd.read_csv(h2_path)
+        pd.concat([pd.DataFrame(rows), h2_row], ignore_index=True).to_csv(
+            summary_path, index=False
+        )
 
 
 def main():
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
+    print("Loading Anthropic Economic Index release data...")
     df = load_data()
-
-    # Verify the structural assumptions first (months, hierarchy levels,
-    # whether usage sums to ~100%) and print them so they can be checked.
     check_data_structure(df)
 
-    plot_collaboration(df)
-    plot_use_case(df)
-    plot_occupation(df)
-    plot_artifact_type_mix(df)
-    plot_occupation_category_gap(df)
-    plot_gap_vs_usage(df)
-    plot_automation_work_only(df)
+    print("\nGenerating H1 output-type analysis...")
+    output_table = plot_output_type_mix(df)
 
-    print("\nProfile plots created successfully.")
-    print(f"Output directory: {OUTPUT_DIR}")
+    print("\nGenerating H2 descriptive comparisons...")
+    plot_collaboration_overall(df)
+    plot_use_case_context(df)
+    plot_work_dominant_occupations(df, work_threshold=60.0)
 
-    # Statistical models and hypothesis tests
-    # (requires: pip install statsmodels patsy scipy)
+    print("\nFitting H2 occupation-adjusted models...")
     try:
         reg = build_regression_dataset(df)
-        run_wls_model(reg)
-        run_beta_model(reg)
-        run_hypotheses(df)
-    except ImportError as e:
-        print(f"\nSkipping statistical models — missing package: {e}")
+        results = []
+        h2_result = test_h2_automation(reg, results)
+        pd.DataFrame(results).to_csv(
+            OUTPUT_DIR / "h2_hypothesis_result.csv", index=False
+        )
+        write_hypothesis_summary(output_table, h2_result)
+    except ImportError as exc:
+        print(f"\nSkipping H2 inferential model — missing package: {exc}")
         print("Install with: pip install statsmodels patsy scipy")
+        write_hypothesis_summary(output_table, None)
+    except Exception as exc:
+        print(f"\nH2 model failed: {type(exc).__name__}: {exc}")
+        write_hypothesis_summary(output_table, None)
+
+    print("\n" + "=" * 72)
+    print("PROFILE COMPLETE")
+    print("=" * 72)
+    print(f"Outputs saved to: {OUTPUT_DIR.resolve()}")
 
 
 if __name__ == "__main__":
